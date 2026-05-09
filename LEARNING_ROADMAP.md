@@ -32,17 +32,18 @@
 
 目标：先理解 Volcano 对外提供什么，再看实现。
 
-- [ ] 通读 `README.md`
-- [ ] 本地跑通 Volcano（任选其一）
+- [x] 通读 `README.md`
+- [x] 本地跑通 Volcano（任选其一）
   - [ ] `hack/local-up-volcano.sh`（Linux/WSL2）
   - [ ] KIND + `kubectl apply -f installer/volcano-development.yaml`
-- [ ] 跑示例
-  - [ ] `example/` 下最简单的 vcjob
+  - [x] 实验环境(controlplane + node01)直接 kubectl apply
+- [x] 跑示例
+  - [x] `example/` 下最简单的 vcjob (hello-volcano)
   - [ ] `example/integrations/tensorflow` 或 `mpi`
-- [ ] 列出全部 CRD：`kubectl get crd | grep volcano`
-  - [ ] 能说清 `Job` / `PodGroup` / `Queue` / `JobFlow` / `JobTemplate` / `HyperNode` 各自作用
+- [x] 列出全部 CRD：`kubectl get crd | grep volcano`
+  - [x] 能说清 `Job` / `PodGroup` / `Queue` / `JobFlow` / `JobTemplate` / `HyperNode` 各自作用
 - [ ] 用 `vcctl` 提交 / 取消 / 列举 job
-- [ ] **里程碑**：白板能画出 "用户提交 vcjob → 谁创建 PodGroup → 谁创建 Pod → 谁调度 → 谁绑定" 的完整链路
+- [x] **里程碑**：白板能画出 "用户提交 vcjob → 谁创建 PodGroup → 谁创建 Pod → 谁调度 → 谁绑定" 的完整链路
 
 ---
 
@@ -174,3 +175,4 @@
 > 每完成一个阶段，写 1–3 行：今天学到的关键点 / 没看懂的地方。卡住的问题攒着下次问。
 
 - _2026-05-09_ — 阶段 0 完成。K8s 基础（informer / controller / scheduling framework）、Go 概念、批调度术语全部过关；EASY-Backfill 与 Reclaim 的具体场景已补齐。下一步：阶段 1 起本地集群。
+- _2026-05-09_ — 阶段 1 主体完成。集群部署 OK；hello-volcano 跑通,亲眼验证 vcjob → PodGroup → Pod 派生关系（owner=vcjob,Pod 通过 annotation 关联 PodGroup）。关键纠偏:vcjob.status 由 Job controller 写而非 scheduler（K8s Single Writer 原则）。理解 PodGroup 抽象的价值:让 scheduler 与具体 Job 类型解耦,生态 (Spark/TF/MPI/Ray) 都通过创建 PodGroup 接入。剩 vcctl 一项后续补。
