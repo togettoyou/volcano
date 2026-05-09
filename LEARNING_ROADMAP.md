@@ -10,21 +10,21 @@
 
 不补这些会处处卡壳。
 
-- [ ] **Kubernetes 调度器基础**
-  - [ ] kube-scheduler 主循环 `Schedule()` 走一遍
-  - [ ] 理解 Scheduling Framework 扩展点：PreFilter / Filter / Score / Reserve / Permit / Bind
-  - [ ] Pod 生命周期、Informer/Lister 机制
-  - [ ] CRD + Controller 模式（写过一次最好）
-- [ ] **Go 必备**
-  - [ ] interface / goroutine / channel / context
-  - [ ] Go Modules（`go mod tidy / vendor`）
-  - [ ] 能读懂反射代码（不需会写）
-- [ ] **批处理调度术语**（每个能用一句话说清）
-  - [ ] Gang Scheduling
-  - [ ] DRF（Dominant Resource Fairness）
-  - [ ] Fair Share / Proportion / Capacity
-  - [ ] Backfill
-  - [ ] Preemption vs Reclaim 的区别
+- [x] **Kubernetes 调度器基础**
+  - [x] kube-scheduler 主循环 `Schedule()` 走一遍
+  - [x] 理解 Scheduling Framework 扩展点：PreFilter / Filter / Score / Reserve / Permit / Bind
+  - [x] Pod 生命周期、Informer/Lister 机制
+  - [x] CRD + Controller 模式（写过一次最好）
+- [x] **Go 必备**
+  - [x] interface / goroutine / channel / context
+  - [x] Go Modules（`go mod tidy / vendor`）
+  - [x] 能读懂反射代码（不需会写）
+- [x] **批处理调度术语**（每个能用一句话说清）
+  - [x] Gang Scheduling
+  - [x] DRF（Dominant Resource Fairness）
+  - [x] Fair Share / Proportion / Capacity
+  - [x] Backfill
+  - [x] Preemption vs Reclaim 的区别
 
 ---
 
@@ -173,4 +173,4 @@
 
 > 每完成一个阶段，写 1–3 行：今天学到的关键点 / 没看懂的地方。卡住的问题攒着下次问。
 
-- _YYYY-MM-DD_ —
+- _2026-05-09_ — 阶段 0 完成。K8s 基础（informer / controller / scheduling framework）、Go 概念、批调度术语全部过关；EASY-Backfill 与 Reclaim 的具体场景已补齐。下一步：阶段 1 起本地集群。
