@@ -140,3 +140,6 @@ vendor
 
 # helm dependency files
 installer/helm/chart/volcano/requirements.lock
+
+# Claude Code personal settings
+.claude/settings.local.json
