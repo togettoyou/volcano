@@ -51,6 +51,10 @@ type SubJobInfo struct {
 	taskPriorities  map[int32]sets.Set[TaskID]
 
 	AllocatedHyperNode string
+	// NominatedHyperNode is the hyperNode chosen by gangpreempt/gangreclaim
+	// for this subJob. allocate honors it via a per-subJob fast path and
+	// clears it on commit. In-memory only; not persisted across restarts.
+	NominatedHyperNode string
 
 	NetworkTopology *scheduling.NetworkTopologySpec
 }
@@ -101,6 +105,18 @@ func (sji *SubJobInfo) IsSoftTopologyMode() bool {
 // WithNetworkTopology returns whether the subJob has configured network topologies
 func (sji *SubJobInfo) WithNetworkTopology() bool {
 	return sji.NetworkTopology != nil
+}
+
+// ConvertToHardTopology converts soft topology mode to hard mode with the given maxTier.
+// This allows soft-mode SubJobs to reuse the hard mode scheduling path with no HyperNode filtering,
+// since all real HyperNode tiers are less than maxTier (ClusterTopHyperNode tier).
+func (sji *SubJobInfo) ConvertToHardTopology(maxTier int) {
+	if sji.NetworkTopology == nil || sji.NetworkTopology.Mode != scheduling.SoftNetworkTopologyMode {
+		return
+	}
+	sji.NetworkTopology.Mode = scheduling.HardNetworkTopologyMode
+	sji.NetworkTopology.HighestTierAllowed = &maxTier
+	sji.NetworkTopology.HighestTierName = ""
 }
 
 func (sji *SubJobInfo) addTask(ti *TaskInfo) {
@@ -260,6 +276,7 @@ func (sji *SubJobInfo) AllocatedTaskNum() int32 {
 
 func (sji *SubJobInfo) CloneStatusFrom(source *SubJobInfo) {
 	sji.AllocatedHyperNode = source.AllocatedHyperNode
+	sji.NominatedHyperNode = source.NominatedHyperNode
 }
 
 // GetMinResources The current sub job is constrained to gang scheduling,

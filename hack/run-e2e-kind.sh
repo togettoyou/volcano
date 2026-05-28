@@ -24,6 +24,7 @@ export LOG_LEVEL=3
 export CLEANUP_CLUSTER=${CLEANUP_CLUSTER:-1}
 export E2E_TYPE=${E2E_TYPE:-"ALL"}
 export ARTIFACTS_PATH=${ARTIFACTS_PATH:-"${VK_ROOT}/volcano-e2e-logs"}
+DRA_GINKGO_FOCUS=${DRA_GINKGO_FOCUS:-"DRA (Quota )?E2E Test"}
 mkdir -p "$ARTIFACTS_PATH"
 
 NAMESPACE=${NAMESPACE:-volcano-system}
@@ -223,6 +224,29 @@ EOF
     shardSyncPeriod: "30s"
     enableNodeEventTrigger: true'
   ;;
+"SHARDINGCONTROLLER")
+  echo "Install volcano chart with crd version $crd_version and sharding controller enabled"
+  helm-install-volcano '  controller_log_level: 5
+  controller_enabled_controllers: "*"
+  sharding_configmap_data: |
+    schedulerConfigs:
+      - name: volcano
+        type: volcano
+        cpuUtilizationMin: 0.0
+        cpuUtilizationMax: 0.6
+        preferWarmupNodes: false
+        minNodes: 2
+        maxNodes: 100
+      - name: agent-scheduler
+        type: agent
+        cpuUtilizationMin: 0.7
+        cpuUtilizationMax: 1.0
+        preferWarmupNodes: true
+        minNodes: 2
+        maxNodes: 100
+    shardSyncPeriod: "60s"
+    enableNodeEventTrigger: true'
+  ;;
 *)
   echo "Install volcano chart with crd version $crd_version"
   helm-install-volcano
@@ -321,25 +345,33 @@ Customize kind options other than --name:
 Disable displaying volcano component logs:
 
     export SHOW_VOLCANO_LOGS=0
+
+Skip cluster creation and Volcano installation (use existing cluster):
+
+    export SKIP_CLUSTER_SETUP=1
 "
   exit 0
 fi
 
-if [[ $CLEANUP_CLUSTER -eq 1 ]]; then
-    trap cleanup EXIT
-fi
-
 source "${VK_ROOT}/hack/lib/install.sh"
-
-check-prerequisites
-kind-up-cluster
-install-kwok-with-helm
 
 if [[ -z ${KUBECONFIG+x} ]]; then
     export KUBECONFIG="${HOME}/.kube/config"
 fi
 
-install-volcano
+if [[ "${SKIP_CLUSTER_SETUP:-0}" -eq 1 ]]; then
+    echo "Skipping cluster setup (SKIP_CLUSTER_SETUP=1), using existing cluster"
+    check-prerequisites
+else
+    if [[ $CLEANUP_CLUSTER -eq 1 ]]; then
+        trap cleanup EXIT
+    fi
+
+    check-prerequisites
+    kind-up-cluster
+    install-kwok-with-helm
+    install-volcano
+fi
 
 # Run e2e test
 cd ${VK_ROOT}
@@ -356,7 +388,7 @@ case ${E2E_TYPE} in
     KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -r --skip="\[sig-.*\]" --slow-spec-threshold='30s' --progress ./test/e2e/schedulingaction/
     KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -r --slow-spec-threshold='30s' --progress ./test/e2e/vcctl/
     KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -r --slow-spec-threshold='30s' --progress ./test/e2e/cronjob/
-    KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -r --slow-spec-threshold='30s' --progress --focus="DRA E2E Test" ./test/e2e/dra/
+    KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -r --slow-spec-threshold='30s' --progress --focus="${DRA_GINKGO_FOCUS}" ./test/e2e/dra/
     KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -r --slow-spec-threshold='30s' --progress ./test/e2e/admission/
     KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -r --slow-spec-threshold='30s' --progress ./test/e2e/hypernode/
     ;;
@@ -391,7 +423,7 @@ case ${E2E_TYPE} in
     ;;
 "DRA")
     echo "Running dra e2e suite..."
-    KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -v -r --slow-spec-threshold='30s' --progress --focus="DRA E2E Test" ./test/e2e/dra/
+    KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -v -r --slow-spec-threshold='30s' --progress --focus="${DRA_GINKGO_FOCUS}" ./test/e2e/dra/
     ;;
 "ADMISSION_POLICY")
     echo "Running admission policy e2e suite..."
@@ -414,6 +446,16 @@ case ${E2E_TYPE} in
 "AGENTSCHEDULER")
     echo "Running agent scheduler e2e suite..."
     KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -v -r --slow-spec-threshold='30s' --progress ./test/e2e/agentscheduler/
+    ;;
+"SHARDINGCONTROLLER")
+    echo "Running sharding controller e2e suite..."
+    KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -v -r --slow-spec-threshold='30s' --progress ./test/e2e/shardingcontroller/
+    ;;
+"GANGEVICT")
+    echo "Creating 4 kwok nodes for gang eviction topology tests"
+    install-kwok-nodes 4
+    echo "Running gang eviction e2e suite..."
+    KUBECONFIG=${KUBECONFIG} GOOS=${OS} ginkgo -v -r --slow-spec-threshold='30s' --progress ./test/e2e/gangevict/
     ;;
 esac
 

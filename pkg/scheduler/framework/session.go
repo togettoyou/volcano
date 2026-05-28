@@ -50,7 +50,6 @@ import (
 	"volcano.sh/volcano/pkg/scheduler/cache"
 	"volcano.sh/volcano/pkg/scheduler/conf"
 	"volcano.sh/volcano/pkg/scheduler/gate"
-	"volcano.sh/volcano/pkg/scheduler/metrics"
 	"volcano.sh/volcano/pkg/scheduler/util"
 )
 
@@ -129,6 +128,7 @@ type Session struct {
 	hyperNodeOrderFns   map[string]api.HyperNodeOrderFn
 	preemptableFns      map[string]api.EvictableFn
 	reclaimableFns      map[string]api.EvictableFn
+	unifiedEvictableFns map[string]api.UnifiedEvictableFn
 	overusedFns         map[string]api.ValidateFn
 	// preemptiveFns means whether current queue can reclaim from other queue,
 	// while reclaimableFns means whether current queue's resources can be reclaimed.
@@ -202,6 +202,7 @@ func openSession(cache cache.Cache) *Session {
 		hyperNodeOrderFns:             map[string]api.HyperNodeOrderFn{},
 		preemptableFns:                map[string]api.EvictableFn{},
 		reclaimableFns:                map[string]api.EvictableFn{},
+		unifiedEvictableFns:           map[string]api.UnifiedEvictableFn{},
 		overusedFns:                   map[string]api.ValidateFn{},
 		preemptiveFns:                 map[string]api.ValidateWithCandidateFn{},
 		allocatableFns:                map[string]api.AllocatableFn{},
@@ -501,6 +502,8 @@ func updateQueueStatus(ssn *Session) {
 	rootQueue := api.QueueID("root")
 	// calculate allocated resources on each queue
 	var allocatedResources = make(map[api.QueueID]*api.Resource, len(ssn.Queues))
+	var allocatedDRAResources = make(map[api.QueueID]map[string]*api.DRAResource, len(ssn.Queues))
+	var allocatedDRAClaimRefs = make(map[api.QueueID]map[string]int, len(ssn.Queues))
 	for queueID := range ssn.Queues {
 		allocatedResources[queueID] = &api.Resource{}
 	}
@@ -510,6 +513,7 @@ func updateQueueStatus(ssn *Session) {
 				for _, task := range tasks {
 					addNodeSharableDeviceUsage(ssn, task)
 					allocatedResources[job.Queue].Add(task.Resreq)
+					addTaskDRAAllocatedByQueue(allocatedDRAResources, allocatedDRAClaimRefs, job.Queue, task)
 					// recursively updates the allocated resources of parent queues
 					queue := ssn.Queues[job.Queue].Queue
 					// compatibility unit testing
@@ -519,6 +523,7 @@ func updateQueueStatus(ssn *Session) {
 							parent = queue.Spec.Parent
 						}
 						allocatedResources[api.QueueID(parent)].Add(task.Resreq)
+						addTaskDRAAllocatedByQueue(allocatedDRAResources, allocatedDRAClaimRefs, api.QueueID(parent), task)
 
 						if parent == string(rootQueue) {
 							break
@@ -534,6 +539,7 @@ func updateQueueStatus(ssn *Session) {
 	for queueID := range ssn.Queues {
 		// convert api.Resource to v1.ResourceList
 		var queueStatus = util.ConvertRes2ResList(allocatedResources[queueID]).DeepCopy()
+		queueStatus = mergeDRAAllocatedIntoResourceList(queueStatus, allocatedDRAResources[queueID])
 
 		if equality.Semantic.DeepEqual(ssn.Queues[queueID].Queue.Status.Allocated, queueStatus) {
 			klog.V(5).Infof("Queue <%s> allocated resource keeps equal, no need to update queue status <%v>.",
@@ -810,7 +816,6 @@ func (ssn *Session) dispatch(task *api.TaskInfo) error {
 		return fmt.Errorf("failed to find job %s", task.Job)
 	}
 
-	metrics.UpdateTaskScheduleDuration(metrics.Duration(task.Pod.CreationTimestamp.Time))
 	return nil
 }
 
@@ -1024,8 +1029,9 @@ func (ssn *Session) IsJobTerminated(jobId api.JobID) bool {
 	return ssn.cache.IsJobTerminated(jobId)
 }
 
-// adjustNetworkTopologySpec translates highestTierName in network topology spec into highestTierAllowed.
-// As a result, once adjustNetworkTopologySpec is invoked, it is no need to consider highestTierName anymore.
+// adjustNetworkTopologySpec translates highestTierName in scheduler-internal network topology copies into highestTierAllowed,
+// and converts soft topology mode to hard mode with ClusterTopHyperNode tier as maxTier.
+// As a result, once adjustNetworkTopologySpec is invoked, it is no need to consider highestTierName or soft mode anymore.
 func (ssn *Session) adjustNetworkTopologySpec() {
 	klog.V(3).Infof("Start adjusting jobs' network topology spec according to hyperNodeTierNameMap %v", ssn.HyperNodeTierNameMap)
 	defer klog.V(3).Infof("Finish adjusting jobs' network topology spec according to hyperNodeTierNameMap %v", ssn.HyperNodeTierNameMap)
@@ -1035,26 +1041,16 @@ func (ssn *Session) adjustNetworkTopologySpec() {
 			continue
 		}
 
-		translated, err := translateHighestTierNameToAllowed(job.PodGroup.Spec.NetworkTopology, ssn.HyperNodeTierNameMap)
+		translated, err := translateHighestTierNameToAllowed(job.NetworkTopology, ssn.HyperNodeTierNameMap)
 		if err != nil {
 			klog.Warningf("Failed to translate highestTierName for job %s/%s: %v, skip translation", job.Namespace, job.Name, err)
 		} else if translated {
 			klog.V(4).Infof("Translated highestTierName for job %s/%s, new highestTierAllowed is %d",
-				job.Namespace, job.Name, *job.PodGroup.Spec.NetworkTopology.HighestTierAllowed)
-		}
-		for _, subGroupPolicy := range job.PodGroup.Spec.SubGroupPolicy {
-			translated, err = translateHighestTierNameToAllowed(subGroupPolicy.NetworkTopology, ssn.HyperNodeTierNameMap)
-			if err != nil {
-				klog.Warningf("Failed to translate highestTierName for subGroupPolicy %s of job %s/%s: %v, skip translation",
-					subGroupPolicy.Name, job.Namespace, job.Name, err)
-			} else if translated {
-				klog.V(4).Infof("Translated highestTierName in subGroupPolicy %s for job %s/%s, new highestTierAllowed is %d",
-					subGroupPolicy.Name, job.Namespace, job.Name, *subGroupPolicy.NetworkTopology.HighestTierAllowed)
-			}
+				job.Namespace, job.Name, *job.NetworkTopology.HighestTierAllowed)
 		}
 
-		// NetworkTopology of SubJob is derived from the original SubGroupPolicy.NetworkTopology, and will be used by plugins like network-topology-aware.
-		// Therefore, for the sake of consistency, NetworkTopology of SubJob should also be updated.
+		// NetworkTopology of SubJob is derived from the original job or SubGroupPolicy NetworkTopology,
+		// and will be used by plugins like network-topology-aware.
 		for _, subJob := range job.SubJobs {
 			translated, err = translateHighestTierNameToAllowed(subJob.NetworkTopology, ssn.HyperNodeTierNameMap)
 			if err != nil {
@@ -1065,6 +1061,59 @@ func (ssn *Session) adjustNetworkTopologySpec() {
 					subJob.UID, job.Namespace, job.Name, *subJob.NetworkTopology.HighestTierAllowed)
 			}
 		}
+	}
+
+	// Convert soft topology to hard topology with ClusterTopHyperNode tier as maxTier,
+	// so that soft-mode jobs reuse the hard-mode scheduling path without any HyperNode filtering.
+	clusterTopHyperNode, exists := ssn.HyperNodes[ClusterTopHyperNode]
+	if !exists {
+		return
+	}
+	maxTier := clusterTopHyperNode.Tier()
+	for _, job := range ssn.Jobs {
+		if !job.ContainsNetworkTopology() {
+			continue
+		}
+		convertSoftToHardTopology(job, maxTier)
+	}
+}
+
+// convertSoftToHardTopology converts all soft network topology constraints in the job to hard mode.
+// Conversion strategy:
+//   - Job-level soft: converted with maxTier (ClusterTopHyperNode tier), achieving no HyperNode
+//     filtering (full soft affinity across the cluster).
+//   - SubJob-level soft: converted with the effective job-level tier (subJobMaxTier).
+//     If the job has a hard tier limit (either user-specified or from the job-level conversion above),
+//     subgroup soft affinity is bounded by that limit. This properly handles the mixed-mode scenario
+//     where job is hard but subgroup is soft: the subgroup prefers lower tiers but never exceeds
+//     the job's hard tier constraint.
+func convertSoftToHardTopology(job *api.JobInfo, maxTier int) {
+	if job.PodGroup == nil {
+		return
+	}
+
+	// Convert job-level soft topology to hard mode with maxTier.
+	if job.NetworkTopology != nil &&
+		job.NetworkTopology.Mode == scheduling.SoftNetworkTopologyMode {
+		klog.V(3).InfoS("Converting job-level soft topology to hard mode",
+			"job", job.UID, "maxTier", maxTier)
+		job.NetworkTopology.Mode = scheduling.HardNetworkTopologyMode
+		job.NetworkTopology.HighestTierAllowed = &maxTier
+		job.NetworkTopology.HighestTierName = ""
+	}
+
+	// Determine the effective maxTier for SubJob conversion.
+	// If the job has an effective tier limit (from hard mode or job-level soft→hard conversion above),
+	// subgroup soft affinity must be bounded by it. Otherwise, fall back to the cluster-wide maxTier.
+	subJobMaxTier := maxTier
+	if job.NetworkTopology != nil &&
+		job.NetworkTopology.HighestTierAllowed != nil {
+		subJobMaxTier = *job.NetworkTopology.HighestTierAllowed
+	}
+
+	// Convert SubJob-level topology (SubJobInfo has its own deep-copied networkTopology).
+	for _, subJob := range job.SubJobs {
+		subJob.ConvertToHardTopology(subJobMaxTier)
 	}
 }
 

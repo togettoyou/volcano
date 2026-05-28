@@ -57,6 +57,11 @@ type TaskSpec struct {
 	MaxRetry              int32
 	SchGates              []v1.PodSchedulingGate
 	PartitionPolicy       *batchv1alpha1.PartitionPolicySpec
+	ResourceClaims        []v1.PodResourceClaim
+	// MinAvailable overrides the per-role minimum that the volcano-job controller
+	// would otherwise default to task.Replicas. Use this to construct jobs that
+	// exercise per-role surplus (TaskMinAvailable < Replicas).
+	MinAvailable *int32
 }
 
 type JobSpec struct {
@@ -126,6 +131,7 @@ func CreateJobWithPodGroup(ctx *TestContext, jobSpec *JobSpec,
 		ts := batchv1alpha1.TaskSpec{
 			Name:            name,
 			Replicas:        task.Rep,
+			MinAvailable:    task.MinAvailable,
 			Policies:        task.Policies,
 			MaxRetry:        task.MaxRetry,
 			PartitionPolicy: task.PartitionPolicy,
@@ -141,6 +147,7 @@ func CreateJobWithPodGroup(ctx *TestContext, jobSpec *JobSpec,
 					Affinity:          task.Affinity,
 					Tolerations:       task.Tolerations,
 					PriorityClassName: task.Taskpriority,
+					ResourceClaims:    task.ResourceClaims,
 				},
 			},
 		}
@@ -234,6 +241,7 @@ func CreateJobInner(ctx *TestContext, jobSpec *JobSpec) (*batchv1alpha1.Job, err
 		ts := batchv1alpha1.TaskSpec{
 			Name:            name,
 			Replicas:        task.Rep,
+			MinAvailable:    task.MinAvailable,
 			Policies:        task.Policies,
 			MaxRetry:        maxRetry,
 			PartitionPolicy: task.PartitionPolicy,
@@ -250,6 +258,7 @@ func CreateJobInner(ctx *TestContext, jobSpec *JobSpec) (*batchv1alpha1.Job, err
 					Tolerations:       task.Tolerations,
 					PriorityClassName: task.Taskpriority,
 					SchedulingGates:   task.SchGates,
+					ResourceClaims:    task.ResourceClaims,
 				},
 			},
 		}
@@ -352,6 +361,7 @@ func logEventsOfPods(ctx *TestContext, pods map[string]*v1.Pod) {
 }
 
 func taskPhaseEx(ctx *TestContext, job *batchv1alpha1.Job, phase []v1.PodPhase, taskNum map[string]int) error {
+	var additionalError error
 	err := wait.Poll(100*time.Millisecond, FiveMinute, func() (bool, error) {
 
 		pods, err := ctx.Kubeclient.CoreV1().Pods(job.Namespace).List(context.TODO(), metav1.ListOptions{})
@@ -372,7 +382,9 @@ func taskPhaseEx(ctx *TestContext, job *batchv1alpha1.Job, phase []v1.PodPhase, 
 		}
 
 		for k, v := range taskNum {
-			if v > readyTaskNum[k] {
+			if readyTaskNum[k] != v {
+				additionalError = fmt.Errorf("expected job '%s' to have ready pods %v by priority class, actual got %v",
+					job.Name, taskNum, readyTaskNum)
 				return false, nil
 			}
 		}
@@ -380,7 +392,7 @@ func taskPhaseEx(ctx *TestContext, job *batchv1alpha1.Job, phase []v1.PodPhase, 
 		return true, nil
 	})
 	if err != nil && strings.Contains(err.Error(), TimeOutMessage) {
-		return fmt.Errorf("[Wait time out]")
+		return fmt.Errorf("[Wait time out]: %s", additionalError)
 	}
 	return err
 

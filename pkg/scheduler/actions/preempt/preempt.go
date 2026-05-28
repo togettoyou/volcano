@@ -28,7 +28,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,7 +37,6 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
-	k8sutil "k8s.io/kubernetes/pkg/scheduler/util"
 
 	fwk "k8s.io/kube-scheduler/framework"
 
@@ -413,10 +411,6 @@ func (pmpt *Action) normalPreempt(
 			if err := nodeStmt.Pipeline(preemptor, node.Name, evictionOccurred); err != nil {
 				klog.Errorf("Failed to pipeline Task <%s/%s> on Node <%s>",
 					preemptor.Namespace, preemptor.Name, node.Name)
-				if rollbackErr := nodeStmt.UnPipeline(preemptor); rollbackErr != nil {
-					klog.Errorf("Failed to unpipeline Task %v on %v in Session %v for %v.",
-						preemptor.UID, node.Name, ssn.UID, rollbackErr)
-				}
 				// Pipeline failed: discard all evictions for this node and try the next one.
 				nodeStmt.Discard()
 				continue
@@ -507,10 +501,6 @@ func (pmpt *Action) topologyAwarePreempt(
 	if err := tmpStmt.Pipeline(preemptor, bestCandidate.Name(), true); err != nil {
 		klog.Errorf("Failed to pipeline Task <%s/%s> on Node <%s>",
 			preemptor.Namespace, preemptor.Name, bestCandidate.Name())
-		if rollbackErr := tmpStmt.UnPipeline(preemptor); rollbackErr != nil {
-			klog.Errorf("Failed to unpipeline Task %v on %v in Session %v for %v.",
-				preemptor.UID, bestCandidate.Name(), ssn.UID, rollbackErr)
-		}
 		// Pipeline failed: discard all evictions to prevent side effects.
 		tmpStmt.Discard()
 		return false, err
@@ -521,7 +511,12 @@ func (pmpt *Action) topologyAwarePreempt(
 	return true, nil
 }
 
-func (pmpt *Action) findCandidates(preemptor *api.TaskInfo, filter func(*api.TaskInfo) bool, predicateNodes []*api.NodeInfo, stmt *framework.Statement) ([]*candidate, map[string]api.Status, error) {
+func (pmpt *Action) findCandidates(
+	preemptor *api.TaskInfo,
+	filter func(*api.TaskInfo) bool,
+	predicateNodes []*api.NodeInfo,
+	stmt *framework.Statement,
+) ([]*candidate, map[string]api.Status, error) {
 	if len(predicateNodes) == 0 {
 		klog.V(3).Infof("No nodes are eligible to preempt task %s/%s", preemptor.Namespace, preemptor.Name)
 		return nil, nil, nil
@@ -608,7 +603,14 @@ func (pmpt *Action) GetOffsetAndNumCandidates(numNodes int) (int, int) {
 	return rand.Intn(numNodes), pmpt.calculateNumCandidates(numNodes)
 }
 
-func (pmpt *Action) DryRunPreemption(preemptor *api.TaskInfo, potentialNodes []*api.NodeInfo, offset, numCandidates int, filter func(*api.TaskInfo) bool, stmt *framework.Statement) ([]*candidate, map[string]api.Status, error) {
+func (pmpt *Action) DryRunPreemption(
+	preemptor *api.TaskInfo,
+	potentialNodes []*api.NodeInfo,
+	offset int,
+	numCandidates int,
+	filter func(*api.TaskInfo) bool,
+	stmt *framework.Statement,
+) ([]*candidate, map[string]api.Status, error) {
 	candidates := newCandidateList(numCandidates)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -761,10 +763,6 @@ func SelectVictimsOnNode(
 
 	klog.V(3).Infof("allVictims: %v", allVictims)
 
-	// Sort potentialVictims by pod priority from high to low, which ensures to
-	// reprieve higher priority pods first.
-	sort.Slice(allVictims, func(i, j int) bool { return k8sutil.MoreImportantPod(allVictims[i].Pod, allVictims[j].Pod) })
-
 	victimsQueue := ssn.BuildVictimsPriorityQueue(allVictims, preemptor)
 
 	for !victimsQueue.Empty() {
@@ -824,6 +822,13 @@ func SelectVictimsOnNode(
 		}
 		klog.Infof("reprievePod for task: %v, fits: %v", pi.Name, fits)
 		return fits, nil
+	}
+
+	// Reverse potentialVictims to reprieve higher priority pods first.
+	// potentialVictims is collected from victimsQueue.Pop() which returns lower priority first,
+	// so we need to reverse it to ensure higher priority pods are reprieved first.
+	for i, j := 0, len(potentialVictims)-1; i < j; i, j = i+1, j-1 {
+		potentialVictims[i], potentialVictims[j] = potentialVictims[j], potentialVictims[i]
 	}
 
 	// Now we try to reprieve non-violating victims.
